@@ -54,7 +54,7 @@ Enclave::Enclave(UntrustedMemory* u) : untrusted(u) {
 }
 
 std::vector<Element> Enclave::encryptBucket(const std::vector<Element>& bucket) {
-    // We'll produce a copy of bucket, XORing only sortKey and routingKey.
+    // produce a copy of bucket, XORing only sortKey and routingKey.
     // rowData is left unencrypted for demo purposes.
     std::vector<Element> encrypted = bucket;
     for (auto& elem : encrypted) {
