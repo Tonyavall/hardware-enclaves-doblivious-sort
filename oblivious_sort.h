@@ -11,28 +11,17 @@
 #include <algorithm>
 #include <utility>
 
-// Represents one row to be sorted + its random routing info + a dummy flag.
+// Represents a data element. For real elements, is_dummy is false.
 struct Element {
-    // The integer key by which we actually want to sort (e.g. subscriberCount).
-    int sortKey;
-
-    // The random key used for oblivious routing (bucket assignment, mergesplit).
-    // This is what was previously 'key' in your code.
-    int routingKey;
-
-    // The entire record as a string. Could hold the JSON object or CSV line, etc.
-    // This way, after we sort by sortKey, we still keep all fields for output.
-    std::string rowData;
-
-    // Indicates whether this is a dummy element or a real one.
+    int value;
+    int key;
     bool is_dummy;
 };
 
-// ---------------- UntrustedMemory ----------------
-// Simulates untrusted storage that holds encrypted buckets.
+// UntrustedMemory simulates untrusted storage (outside the enclave) that holds encrypted buckets.
 class UntrustedMemory {
 public:
-    // The storage is addressed by (level, bucketIndex) pairs.
+    // Storage: keys are (level, bucket_index) and values are encrypted buckets.
     std::map<std::pair<int, int>, std::vector<Element>> storage;
     std::vector<std::string> access_log;
 
@@ -42,66 +31,59 @@ public:
     // Write an encrypted bucket to untrusted memory.
     void write_bucket(int level, int bucket_index, const std::vector<Element>& bucket);
 
-    // Retrieve the entire access log.
+    // Retrieve the access log.
     std::vector<std::string> get_access_log();
 };
 
-// ---------------- Enclave ----------------
-// Represents the trusted SGX enclave that does all the oblivious operations.
+// Enclave represents the trusted SGX enclave. It decrypts data from untrusted memory,
+// performs the oblivious sort operations, and reencrypts data when writing back.
 class Enclave {
 public:
     UntrustedMemory* untrusted;
-    std::mt19937 rng; // Random number generator
+    std::mt19937 rng; // Random number generator.
 
     // A fixed key for our simulated encryption.
     static constexpr int encryption_key = 0xdeadbeef;
 
-    // Constructor.
+    // Constructor: initializes the enclave with a pointer to untrusted memory.
     Enclave(UntrustedMemory* u);
 
-    // Simulated encryption: XOR sortKey and routingKey with encryption_key.
-    // We do not encrypt rowData in this toy example, but you could do so if needed.
+    // Simulated encryption: XOR each integer field with encryption_key.
     static std::vector<Element> encryptBucket(const std::vector<Element>& bucket);
 
     // Simulated decryption.
     static std::vector<Element> decryptBucket(const std::vector<Element>& bucket);
 
-    // Compute bucket parameters: B (num buckets) and L (num levels) from n and Z.
+    // Computes the bucket parameters (B: number of buckets, L: number of levels)
+    // given the input size n and bucket capacity Z.
     std::pair<int, int> computeBucketParameters(int n, int Z);
 
-    // Step 1: Initialize buckets with random routing keys, store rowData, pad with dummies.
-    // 'inputRows': each row is a (subscriberCount, entireRowAsJSON).
-    void initializeBuckets(const std::vector<std::pair<int, std::string>>& inputRows,
-        int B, int Z);
+    // Step 1: Initializes buckets by assigning random keys, partitioning the input, and padding with dummies.
+    void initializeBuckets(const std::vector<int>& input_array, int B, int Z);
 
-    // Step 2: The mergesplit butterfly or bitonic approach to shuffle them obliviously.
+    // Step 2: Processes the butterfly network by performing MergeSplit on each bucket pair.
     void performButterflyNetwork(int B, int L, int Z);
 
-    // Step 3: Extract final elements from the last level, do an in-enclave shuffle.
+    // Step 3: Extracts final elements from the last level and performs a local oblivious permutation.
     std::vector<Element> extractFinalElements(int B, int L);
 
-    // Step 4: Final sort by 'sortKey' in normal data-dependent manner, returning sorted rows.
-    // We output the entire rowData, but the ordering is by sortKey ascending.
-    std::vector<std::string> finalSort(const std::vector<Element>& final_elements);
+    // Step 4: Performs a final non-oblivious sort on the extracted elements.
+    std::vector<int> finalSort(const std::vector<Element>& final_elements);
 
-    // The top-level oblivious sort function.
-    //   'inputRows': vector of (subscriberCount, entireRowString).
-    //   'bucket_size': capacity Z for each bucket.
-    std::vector<std::string> oblivious_sort(
-        const std::vector<std::pair<int, std::string>>& inputRows,
-        int bucket_size
-    );
+    // The main oblivious sort function.
+    std::vector<int> oblivious_sort(const std::vector<int>& input_array, int bucket_size);
 
-    // ---------------- Bitonic mergesplit Helpers ----------------
+    // NEW: Bitonic sort based functions for constant storage MergeSplit.
+    // These functions operate on a small vector (of size 2Z) inside the enclave.
     void bitonicMerge(std::vector<Element>& a, int low, int cnt, bool ascending);
     void bitonicSort(std::vector<Element>& a, int low, int cnt, bool ascending);
 
-    // The mergesplit that uses bitonic sort, as in your original code.
+    // Modified MergeSplit function that uses bitonic sort to implement the bucket split
+    // with only O(1) enclave storage.
     std::pair<std::vector<Element>, std::vector<Element>> merge_split_bitonic(
         const std::vector<Element>& bucket1,
         const std::vector<Element>& bucket2,
-        int level, int total_levels, int Z
-    );
+        int level, int total_levels, int Z);
 };
 
 #endif // OBLIVIOUS_SORT_H
