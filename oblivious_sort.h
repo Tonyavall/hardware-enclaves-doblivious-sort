@@ -13,7 +13,7 @@
 
 // Represents a data element. For real elements, is_dummy is false.
 struct Element {
-    int value;
+    std::string value;  // Changed from int to std::string.
     int key;
     bool is_dummy;
 };
@@ -48,7 +48,7 @@ public:
     // Constructor: initializes the enclave with a pointer to untrusted memory.
     Enclave(UntrustedMemory* u);
 
-    // Simulated encryption: XOR each integer field with encryption_key.
+    // Simulated encryption: XOR each field with encryption_key.
     static std::vector<Element> encryptBucket(const std::vector<Element>& bucket);
 
     // Simulated decryption.
@@ -59,22 +59,21 @@ public:
     std::pair<int, int> computeBucketParameters(int n, int Z);
 
     // Step 1: Initializes buckets by assigning random keys, partitioning the input, and padding with dummies.
-    void initializeBuckets(const std::vector<int>& input_array, int B, int Z);
+    void initializeBuckets(const std::vector<std::string>& input_array, int B, int Z);
 
     // Step 2: Processes the butterfly network by performing MergeSplit on each bucket pair.
     void performButterflyNetwork(int B, int L, int Z);
 
-    // Step 3: Extracts final elements from the last level and performs a local oblivious permutation.
+    // Step 3: Extracts final elements from the last level and performs an oblivious permutation on each bucket.
     std::vector<Element> extractFinalElements(int B, int L);
 
     // Step 4: Performs a final non-oblivious sort on the extracted elements.
-    std::vector<int> finalSort(const std::vector<Element>& final_elements);
+    std::vector<std::string> finalSort(const std::vector<Element>& final_elements);
 
     // The main oblivious sort function.
-    std::vector<int> oblivious_sort(const std::vector<int>& input_array, int bucket_size);
+    std::vector<std::string> oblivious_sort(const std::vector<std::string>& input_array, int bucket_size);
 
-    // NEW: Bitonic sort based functions for constant storage MergeSplit.
-    // These functions operate on a small vector (of size 2Z) inside the enclave.
+    // Bitonic sort based functions for constant storage MergeSplit.
     void bitonicMerge(std::vector<Element>& a, int low, int cnt, bool ascending);
     void bitonicSort(std::vector<Element>& a, int low, int cnt, bool ascending);
 
@@ -84,6 +83,10 @@ public:
         const std::vector<Element>& bucket1,
         const std::vector<Element>& bucket2,
         int level, int total_levels, int Z);
+
+    // NEW: Oblivious permutation for a bucket using constant local storage.
+    // It assigns a random label to each element and then obliviously sorts the bucket.
+    void obliviousPermuteBucket(std::vector<Element>& bucket);
 };
 
 #endif // OBLIVIOUS_SORT_H

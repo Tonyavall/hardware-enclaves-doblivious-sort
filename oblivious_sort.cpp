@@ -2,36 +2,26 @@
 #include <iostream>
 #include <algorithm>
 #include <random>
+#include <cstring>
+
+// Helper function to XOR encrypt/decrypt a string using the provided key.
+static std::string xor_encrypt_string(const std::string &s, int key) {
+    std::string result = s;
+    for (char &c : result) {
+        c = c ^ (key & 0xFF);
+    }
+    return result;
+}
 
 // ----- UntrustedMemory Methods -----
 std::vector<Element> UntrustedMemory::read_bucket(int level, int bucket_index) {
     std::pair<int, int> key = { level, bucket_index };
-    std::ostringstream oss;
-    oss << "Read bucket at level " << level << ", index " << bucket_index << ": ";
-    if (storage.find(key) != storage.end()) {
-        for (const auto& elem : storage[key]) {
-            if (elem.is_dummy)
-                oss << "dummy ";
-            else
-                oss << elem.value << " ";
-        }
-    }
-    access_log.push_back(oss.str());
     return storage[key];
 }
 
 void UntrustedMemory::write_bucket(int level, int bucket_index, const std::vector<Element>& bucket) {
     std::pair<int, int> key = { level, bucket_index };
     storage[key] = bucket;
-    std::ostringstream oss;
-    oss << "Write bucket at level " << level << ", index " << bucket_index << ": ";
-    for (const auto& elem : bucket) {
-        if (elem.is_dummy)
-            oss << "dummy ";
-        else
-            oss << elem.value << " ";
-    }
-    access_log.push_back(oss.str());
 }
 
 std::vector<std::string> UntrustedMemory::get_access_log() {
@@ -48,7 +38,7 @@ std::vector<Element> Enclave::encryptBucket(const std::vector<Element>& bucket) 
     std::vector<Element> encrypted = bucket;
     for (auto& elem : encrypted) {
         if (!elem.is_dummy) {
-            elem.value ^= encryption_key;
+            elem.value = xor_encrypt_string(elem.value, encryption_key);
             elem.key ^= encryption_key;
         }
     }
@@ -59,7 +49,7 @@ std::vector<Element> Enclave::decryptBucket(const std::vector<Element>& bucket) 
     std::vector<Element> decrypted = bucket;
     for (auto& elem : decrypted) {
         if (!elem.is_dummy) {
-            elem.value ^= encryption_key;
+            elem.value = xor_encrypt_string(elem.value, encryption_key);
             elem.key ^= encryption_key;
         }
     }
@@ -77,13 +67,13 @@ std::pair<int, int> Enclave::computeBucketParameters(int n, int Z) {
     return { B, L };
 }
 
-void Enclave::initializeBuckets(const std::vector<int>& input_array, int B, int Z) {
+void Enclave::initializeBuckets(const std::vector<std::string>& input_array, int B, int Z) {
     int n = input_array.size();
     std::vector<Element> elements;
     std::uniform_int_distribution<int> key_dist(0, B - 1);
-    for (int x : input_array) {
+    for (const std::string &s : input_array) {
         int random_key = key_dist(rng);
-        elements.push_back(Element{ x, random_key, false });
+        elements.push_back(Element{ s, random_key, false });
     }
     int group_size = (n + B - 1) / B;
     std::vector<std::vector<Element>> groups(B);
@@ -98,10 +88,11 @@ void Enclave::initializeBuckets(const std::vector<int>& input_array, int B, int 
     for (int i = 0; i < B; i++) {
         std::vector<Element> bucket = groups[i];
         while (bucket.size() < static_cast<size_t>(Z))
-            bucket.push_back(Element{ 0, 0, true });
+            bucket.push_back(Element{ "", 0, true });
         untrusted->write_bucket(0, i, encryptBucket(bucket));
     }
 }
+
 void Enclave::bitonicMerge(std::vector<Element>& a, int low, int cnt, bool ascending) {
     if (cnt > 1) {
         int k = cnt / 2;
@@ -119,16 +110,12 @@ void Enclave::bitonicMerge(std::vector<Element>& a, int low, int cnt, bool ascen
 void Enclave::bitonicSort(std::vector<Element>& a, int low, int cnt, bool ascending) {
     if (cnt > 1) {
         int k = cnt / 2;
-        // First half sorted in ascending order, second half in descending order.
         bitonicSort(a, low, k, true);
         bitonicSort(a, low + k, k, false);
-        // Merge whole sequence in desired order.
         bitonicMerge(a, low, cnt, ascending);
     }
 }
 
-// Modified merge_split function that uses bitonic sort.
-// This function replaces the original merge_split to achieve constant (O(1)) enclave storage.
 std::pair<std::vector<Element>, std::vector<Element>> Enclave::merge_split_bitonic(
     const std::vector<Element>& bucket1,
     const std::vector<Element>& bucket2,
@@ -159,13 +146,6 @@ std::pair<std::vector<Element>, std::vector<Element>> Enclave::merge_split_biton
     int needed_dummies1 = Z - count1;
     int assigned_dummies0 = 0, assigned_dummies1 = 0;
 
-    // For each element in 'combined', assign a composite key that will be used for bitonic sort.
-    // We define the composite key as:
-    //   For a real element: ( ( (elem.key >> bit_index) & 1 ) << 1 ) | 0.
-    //       That is, 0 if the bit is 0 (target bucket 0) and 2 if the bit is 1 (target bucket 1).
-    //   For a dummy element:
-    //       If we still need dummies in bucket 0, assign composite key 1.
-    //       Otherwise, assign composite key 3.
     for (auto& elem : combined) {
         if (elem.is_dummy) {
             if (assigned_dummies0 < needed_dummies0) {
@@ -193,7 +173,6 @@ std::pair<std::vector<Element>, std::vector<Element>> Enclave::merge_split_biton
     return { out_bucket0, out_bucket1 };
 }
 
-
 void Enclave::performButterflyNetwork(int B, int L, int Z) {
     for (int level = 0; level < L; level++) {
         for (int i = 0; i < B; i += 2) {
@@ -208,34 +187,43 @@ void Enclave::performButterflyNetwork(int B, int L, int Z) {
     }
 }
 
+// NEW: Oblivious permutation for a bucket using constant local storage.
+// For each element in the bucket, assign a uniformly random label (stored in key)
+// and then obliviously sort the bucket based on these labels.
+void Enclave::obliviousPermuteBucket(std::vector<Element>& bucket) {
+    for (auto &elem : bucket) {
+         elem.key = rng();
+    }
+    bitonicSort(bucket, 0, bucket.size(), true);
+}
+
 std::vector<Element> Enclave::extractFinalElements(int B, int L) {
     std::vector<Element> final_elements;
     for (int i = 0; i < B; i++) {
         std::vector<Element> bucket_enc = untrusted->read_bucket(L, i);
         std::vector<Element> bucket = decryptBucket(bucket_enc);
-        std::vector<Element> real_elements;
+        // Instead of using a non-oblivious shuffle, perform an oblivious permutation.
+        obliviousPermuteBucket(bucket);
         for (const auto& elem : bucket)
             if (!elem.is_dummy)
-                real_elements.push_back(elem);
-        std::shuffle(real_elements.begin(), real_elements.end(), rng);
-        final_elements.insert(final_elements.end(), real_elements.begin(), real_elements.end());
+                final_elements.push_back(elem);
     }
     return final_elements;
 }
 
-std::vector<int> Enclave::finalSort(const std::vector<Element>& final_elements) {
+std::vector<std::string> Enclave::finalSort(const std::vector<Element>& final_elements) {
     std::vector<Element> sorted_elements = final_elements;
     std::sort(sorted_elements.begin(), sorted_elements.end(),
         [](const Element& a, const Element& b) {
-            return a.value < b.value;
+            return a.value < b.value; // Lexicographical order.
         });
-    std::vector<int> sorted_values;
+    std::vector<std::string> sorted_values;
     for (const auto& elem : sorted_elements)
         sorted_values.push_back(elem.value);
     return sorted_values;
 }
 
-std::vector<int> Enclave::oblivious_sort(const std::vector<int>& input_array, int bucket_size) {
+std::vector<std::string> Enclave::oblivious_sort(const std::vector<std::string>& input_array, int bucket_size) {
     int n = input_array.size();
     int Z = bucket_size;
     auto [B, L] = computeBucketParameters(n, Z);
